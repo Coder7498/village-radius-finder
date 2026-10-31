@@ -8,7 +8,7 @@ from geopy.distance import geodesic
 st.set_page_config(page_title="Village Radius Finder", layout="wide")
 
 st.title("🗺️ 10 km Village Radius Automation Tool")
-st.write("Find all surrounding settlements within a precise 10 km radius using optimized OpenStreetMap nodes.")
+st.write("Find all surrounding settlements within a precise 10 km radius using cached OpenStreetMap data.")
 
 input_mode = st.radio("Choose Input Method:", ["Search by Village Name", "Enter Coordinates Directly"])
 
@@ -27,7 +27,7 @@ if input_mode == "Search by Village Name":
         geo_query = f"{target_village}, {region_hint}"
         url = "https://nominatim.openstreetmap.org/search"
         params = {'q': geo_query, 'format': 'json', 'limit': 1}
-        headers = {'User-Agent': 'VillageRadiusApp/4.0'}
+        headers = {'User-Agent': 'VillageRadiusApp/5.0'}
         
         try:
             response = requests.get(url, params=params, headers=headers, timeout=10).json()
@@ -49,46 +49,46 @@ else:
     with col3:
         center_lon = st.number_input("Longitude", value=74.78000, format="%.5f")
     
+    # Use coordinate values directly if button is clicked or page reloads
     if st.button("Scan Radius from Coordinates", type="primary"):
         pass
 
-# Force trigger when using coordinate mode
+# Force execution when in coordinate mode
 if input_mode == "Enter Coordinates Directly":
     pass
 
+# Use cached function to prevent repeated timeouts on server calls
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_osm_villages(lat, lon, radius):
+    radius_meters = int(radius * 1000)
+    query = f"""
+    [out:json][timeout:25];
+    node["place"~"village|hamlet"](around:{radius_meters},{lat},{lon});
+    out body;
+    """
+    mirrors = [
+        "https://overpass-api.de/api/interpreter",
+        "https://overpass.kumi.systems/api/interpreter",
+        "https://lz4.overpass-api.de/api/interpreter"
+    ]
+    headers = {'User-Agent': 'VillageRadiusAutomationTool/5.0'}
+    
+    for mirror in mirrors:
+        try:
+            res = requests.post(mirror, data={'data': query}, headers=headers, timeout=20)
+            if res.status_code == 200:
+                return res.json().get('elements', [])
+        except Exception:
+            continue
+    return None
+
 if center_lat and center_lon:
-    with st.spinner("Scanning OpenStreetMap (Optimized Node Query)..."):
-        radius_meters = int(radius_km * 1000)
+    with st.spinner("Querying OpenStreetMap (Using cached server requests)..."):
+        elements = fetch_osm_villages(center_lat, center_lon, radius_km)
         
-        # Optimized lightweight query targeting nodes only (prevents server timeouts)
-        query = f"""
-        [out:json][timeout:25];
-        node["place"~"village|hamlet"](around:{radius_meters},{center_lat},{center_lon});
-        out body;
-        """
-        
-        overpass_mirrors = [
-            "https://overpass-api.de/api/interpreter",
-            "https://overpass.kumi.systems/api/interpreter",
-            "https://maps.mail.ru/osm/tools/overpass/api/interpreter"
-        ]
-        
-        op_response = None
-        headers = {'User-Agent': 'VillageRadiusAutomationTool/4.0'}
-        
-        for mirror in overpass_mirrors:
-            try:
-                res = requests.post(mirror, data={'data': query}, headers=headers, timeout=20)
-                if res.status_code == 200:
-                    op_response = res.json()
-                    break
-            except Exception:
-                continue
-                
-        if not op_response:
-            st.error("Map servers are busy. Please click the scan button again.")
+        if elements is None:
+            st.error("Map servers are temporarily rate-limiting requests. Please wait 10 seconds and click the scan button again.")
         else:
-            elements = op_response.get('elements', [])
             villages_data = []
             center_coords = (center_lat, center_lon)
             
@@ -115,7 +115,6 @@ if center_lat and center_lon:
             if df.empty:
                 st.warning(f"No settlements found within {radius_km} km for these coordinates.")
             else:
-                # Remove duplicates if any
                 df = df.drop_duplicates(subset=['Village Name', 'Latitude', 'Longitude'])
                 df = df.sort_values(by='Distance (km)').reset_index(drop=True)
                 
@@ -132,7 +131,7 @@ if center_lat and center_lon:
                 
                 m = folium.Map(location=[center_lat, center_lon], zoom_start=12)
                 folium.Marker([center_lat, center_lon], popup=f"<b>Center: {target_village}</b>", icon=folium.Icon(color='red', icon='home')).add_to(m)
-                folium.Circle(radius=radius_meters, location=[center_lat, center_lon], color='blue', fill=True, fill_opacity=0.1).add_to(m)
+                folium.Circle(radius=int(radius_km * 1000), location=[center_lat, center_lon], color='blue', fill=True, fill_opacity=0.1).add_to(m)
                 
                 for _, row in df.iterrows():
                     if row['Village Name'] != target_village:
@@ -142,4 +141,4 @@ if center_lat and center_lon:
                             icon=folium.Icon(color='green', icon='info-sign')
                         ).add_to(m)
                 
-                st_folium(m, width=700, height=500)
+                st_folium(m, width=None, height=500, use_container_width=True)
