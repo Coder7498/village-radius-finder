@@ -27,7 +27,7 @@ if input_mode == "Search by Village Name":
         geo_query = f"{target_village}, {region_hint}"
         url = "https://nominatim.openstreetmap.org/search"
         params = {'q': geo_query, 'format': 'json', 'limit': 1}
-        headers = {'User-Agent': 'VillageRadiusApp/2.0'}
+        headers = {'User-Agent': 'VillageRadiusApp/3.0'}
         
         try:
             response = requests.get(url, params=params, headers=headers, timeout=10).json()
@@ -45,27 +45,24 @@ else:
     with col1:
         target_village = st.text_input("Village Name", "Nimbawade")
     with col2:
-        center_lat = st.number_input("Latitude", value=17.45000, format="%.5f")
+        center_lat = st.number_input("Latitude", value=17.45730, format="%.5f")
     with col3:
         center_lon = st.number_input("Longitude", value=74.78000, format="%.5f")
     
-    # Auto-trigger scan when using coordinates mode
     if st.button("Scan Radius from Coordinates", type="primary"):
         pass
 
-# Use fixed values or session state defaults if coordinates are set via direct input mode
+# Force trigger when using coordinate mode so it scans automatically on button click
 if input_mode == "Enter Coordinates Directly":
-    # Default fallback coordinates for Nimbawade, Atpadi if user hasn't changed them
+    # We use the values from inputs above
     pass
 
 if center_lat and center_lon:
-    with st.spinner("Querying OpenStreetMap Overpass API..."):
-        # Using a reliable official mirror endpoint with custom user-agent headers
-        overpass_url = "https://overpass.kumi.systems/api/interpreter" 
+    with st.spinner("Querying OpenStreetMap via multi-mirror failover network..."):
         radius_meters = int(radius_km * 1000)
         
         query = f"""
-        [out:json][timeout:30];
+        [out:json][timeout:45];
         (
           node["place"~"village|hamlet"](around:{radius_meters},{center_lat},{center_lon});
           way["place"~"village|hamlet"](around:{radius_meters},{center_lat},{center_lon});
@@ -73,12 +70,30 @@ if center_lat and center_lon:
         );
         out center;
         """
-        headers = {'User-Agent': 'VillageRadiusAutomationTool/2.0'}
         
-        try:
-            op_response = requests.post(overpass_url, data={'data': query}, headers=headers, timeout=35).json()
+        # List of reliable public Overpass mirrors for automatic fallback
+        overpass_mirrors = [
+            "https://overpass.kumi.systems/api/interpreter",
+            "https://overpass-api.de/api/interpreter",
+            "https://maps.mail.ru/osm/tools/overpass/api/interpreter"
+        ]
+        
+        op_response = None
+        headers = {'User-Agent': 'VillageRadiusAutomationTool/3.0'}
+        
+        for mirror in overpass_mirrors:
+            try:
+                res = requests.post(mirror, data={'data': query}, headers=headers, timeout=40)
+                if res.status_code == 200:
+                    op_response = res.json()
+                    break
+            except Exception:
+                continue
+                
+        if not op_response:
+            st.error("All map servers are currently busy or timed out. Please click the button to try again.")
+        else:
             elements = op_response.get('elements', [])
-            
             villages_data = []
             center_coords = (center_lat, center_lon)
             
@@ -130,6 +145,3 @@ if center_lat and center_lon:
                         ).add_to(m)
                 
                 st_folium(m, width=700, height=500)
-                
-        except Exception as e:
-                st.error(f"Connection error reaching map server: {e}. Please try again in a moment.")
